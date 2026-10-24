@@ -1,4 +1,4 @@
-# Scholarly: research paper organizer (DBMS project)
+# Scholarly: research paper organizer 
 
 Store your research papers, read and highlight them in the browser, and organize everything in a
 hand-designed PostgreSQL database: collections, comparison tables, concept prerequisite graphs,
