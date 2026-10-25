@@ -4,6 +4,7 @@ services:
     name: scholarly-api
     runtime: docker
     plan: free
+    region: singapore   # closest to India; create the Neon database in Singapore too
     dockerContext: ./backend
     dockerfilePath: ./backend/Dockerfile
     healthCheckPath: /api/health
