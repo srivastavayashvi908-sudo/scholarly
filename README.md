@@ -21,7 +21,7 @@ citation graphs, full-text and semantic search, reading stats and sharing.
 | Citations | Citation graph + recursive lineage ("everything this paper builds on") |
 | Read next | Papers you're ready for, given what you've already learned |
 | Search | Full-text search (ranked, with highlighted snippets) across papers, highlights, notes |
-| AI | Similar papers (local embeddings), **Ask your library** (RAG), AI summaries (Grok) |
+| AI | Similar papers (local embeddings), **Ask your library** (RAG), AI summaries (Groq) |
 | Dashboard | Totals, minutes/day, papers/month, tags, most cited, **reading streak** + activity heatmap |
 
 ## Running it
@@ -31,7 +31,7 @@ You need **Docker Desktop** and **Node.js 18+**.
 ```bash
 # 1. Configure
 cp .env.example .env          # Windows PowerShell: copy .env.example .env
-#    then open .env and paste your Grok key into LLM_API_KEY (optional; see below)
+#    then open .env and paste your Groq key into LLM_API_KEY (optional; see below)
 
 # 2. Start the database + backend (first build takes a few minutes)
 docker compose up -d --build
@@ -58,10 +58,22 @@ host `localhost`, port **5433**, user/password/database `research`.
 | `LLM_API_KEY` | for AI summaries + Ask | A Groq (`gsk_...`) or Grok/xAI (`xai-...`) key. Everything else works without it. |
 | `LLM_BASE_URL` | no | Groq: `https://api.groq.com/openai/v1` · xAI: `https://api.x.ai/v1`. Any OpenAI-compatible API works. |
 | `LLM_MODEL` | no | Groq: `openai/gpt-oss-120b` · xAI: a Grok model name. |
-| `DATABASE_URL` | no | Set by docker-compose. |
+| `DATABASE_URL` | no | Set by docker-compose. When hosted: your Neon connection string. |
+| `CORS_ORIGINS` | when hosted | The frontend's address, e.g. `https://scholarly.vercel.app` (comma-separate several). |
 
 Similar papers, semantic search and embeddings use a **free local model** (`BAAI/bge-small-en-v1.5`),
 so they need no key.
+
+## Hosting it for free
+
+| Part | Host | Settings |
+|---|---|---|
+| Database | [Neon](https://neon.tech) (free Postgres with pgvector) | Copy the **direct** (not pooled) connection string |
+| Backend | [Render](https://render.com) free web service | *New → Blueprint* and pick this repo (uses `render.yaml`). Set `DATABASE_URL`, `LLM_API_KEY`, `CORS_ORIGINS` |
+| Frontend | [Vercel](https://vercel.com) | Import the repo, root directory `frontend`, env var `VITE_API_URL` = the Render URL |
+
+The tables are created automatically the first time the backend starts. Render's free tier sleeps
+after 15 minutes idle, so the first visit after a break takes about a minute.
 
 ## Project layout
 
@@ -69,6 +81,7 @@ so they need no key.
 backend/
   migrations/001_schema.sql               all tables, constraints, generated columns
   migrations/002_views_indexes_triggers.sql  indexes, views, triggers, stored function
+  migrations/003_pdf_storage.sql, 004_...    PDFs moved from disk into the database
   app/main.py        app setup + router registration
   app/db.py          connection pool + migration runner
   app/auth.py        bcrypt passwords + JWT
@@ -84,7 +97,7 @@ frontend/src/
 
 ## Database design notes (for the viva)
 
-**Tables (20):** users, papers, paper_reading_state, reading_sessions, collections, collection_members,
+**Tables (21):** users, papers, paper_files, paper_reading_state, reading_sessions, collections, collection_members,
 paper_collections, highlights, highlight_collections, notes, highlight_comments, paper_attributes,
 concepts, concept_prerequisites, paper_concepts, citations, paper_reference_dois, paper_embeddings,
 highlight_embeddings, concept_embeddings.
@@ -96,6 +109,7 @@ highlight_embeddings, concept_embeddings.
 - **Self-referencing one-to-many (tree):** highlight_comments.parent_id
 - **EAV (Entity-Attribute-Value):** paper_attributes, pivoted into a table at query time
 - **Weak-entity-style composite keys:** paper_reading_state (user_id, paper_id)
+- **One-to-one:** papers → paper_files (uploaded PDFs stored as `bytea`, so free hosts with wiped disks keep them)
 
 **Integrity**
 - `CHECK` constraints: allowed tags/statuses/roles, colour format, year range, no self-citation,

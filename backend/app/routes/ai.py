@@ -42,8 +42,8 @@ def similar_papers(paper_id: UUID, limit: int = 5, user=Depends(current_user), c
     ).fetchall()
 
 
-def pdf_text(path: str, max_chars: int = 15000) -> str:
-    reader = PdfReader(path)
+def pdf_text(data: bytes, max_chars: int = 15000) -> str:
+    reader = PdfReader(BytesIO(data))
     out = []
     for page in reader.pages[:6]:
         out.append(page.extract_text() or "")
@@ -57,9 +57,10 @@ def summarize(paper_id: UUID, user=Depends(current_user), conn=Depends(get_conn)
     require_paper(conn, user, paper_id, "editor")
     paper = conn.execute("SELECT * FROM papers WHERE id = %s", (paper_id,)).fetchone()
     source = paper["abstract"] or ""
-    if paper["pdf_path"]:
+    pdf = conn.execute("SELECT data FROM paper_files WHERE paper_id = %s", (paper_id,)).fetchone()
+    if pdf:
         try:
-            source = (source + "\n\n" + pdf_text(paper["pdf_path"])).strip()
+            source = (source + "\n\n" + pdf_text(bytes(pdf["data"]))).strip()
         except Exception:  # noqa: BLE001
             pass
     if not source:

@@ -20,12 +20,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://research:research@db:5432/research
-      UPLOAD_DIR: /data/uploads
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app          # live code reload while developing
-      - uploads:/data/uploads   # uploaded PDFs survive restarts
     depends_on:
       db:
         condition: service_healthy
@@ -33,4 +31,3 @@ services:
 
 volumes:
   pgdata:
-  uploads:

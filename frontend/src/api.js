@@ -1,6 +1,8 @@
 // Tiny fetch wrapper: adds the login token and turns API errors into readable messages.
 
 const TOKEN_KEY = 'rpt_token'
+// Locally Vite proxies /api to the backend; when hosted, VITE_API_URL points at the backend's site.
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '') + '/api'
 
 export const getToken = () => {
   try { return localStorage.getItem(TOKEN_KEY) } catch { return null }
@@ -21,7 +23,7 @@ async function request(method, path, body, { raw = false } = {}) {
   if (body instanceof FormData) payload = body
   else if (body !== undefined) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body) }
 
-  const res = await fetch('/api' + path, { method, headers, body: payload })
+  const res = await fetch(API_BASE + path, { method, headers, body: payload })
   if (res.status === 401 && token) {
     setToken(null)
     window.location.href = '/login'

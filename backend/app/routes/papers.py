@@ -1,15 +1,13 @@
-import os
 from io import BytesIO
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from psycopg.errors import UniqueViolation
 from pypdf import PdfReader
 
 from ..access import require_paper
 from ..auth import current_user
-from ..config import UPLOAD_DIR
 from ..db import get_conn
 from ..models import AttributeIn, ImportIn, PaperConceptIn, PaperIn, PaperPatch, ReadingStateIn
 from ..services import embeddings, metadata
@@ -19,7 +17,7 @@ router = APIRouter(prefix="/papers", tags=["papers"])
 # Every paper query returns these columns plus the caller's role and reading state.
 PAPER_SELECT = """
     SELECT p.id, p.owner_id, u.name AS owner_name, p.title, p.authors, p.year, p.venue,
-           p.doi, p.arxiv_id, p.abstract, p.summary, p.pdf_url, (p.pdf_path IS NOT NULL) AS has_pdf,
+           p.doi, p.arxiv_id, p.abstract, p.summary, p.pdf_url, EXISTS (SELECT 1 FROM paper_files f WHERE f.paper_id = p.id) AS has_pdf,
            p.num_pages, p.created_at, p.updated_at,
            r.role,
            coalesce(s.status, 'to_read') AS status,
@@ -81,11 +79,14 @@ def save_pdf(conn, paper_id, data: bytes) -> None:
         num_pages = len(PdfReader(BytesIO(data)).pages)
     except Exception:  # noqa: BLE001
         raise HTTPException(422, "That file isn't a readable PDF")
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    path = os.path.join(UPLOAD_DIR, f"{paper_id}.pdf")
-    with open(path, "wb") as f:
-        f.write(data)
-    conn.execute("UPDATE papers SET pdf_path = %s, num_pages = %s WHERE id = %s", (path, num_pages, paper_id))
+    conn.execute(
+        """
+        INSERT INTO paper_files (paper_id, data) VALUES (%s, %s)
+        ON CONFLICT (paper_id) DO UPDATE SET data = excluded.data, uploaded_at = now()
+        """,
+        (paper_id, data),
+    )
+    conn.execute("UPDATE papers SET num_pages = %s WHERE id = %s", (num_pages, paper_id))
 
 
 # ---------------------------------------------------------------- CRUD
@@ -187,9 +188,7 @@ def update_paper(paper_id: UUID, body: PaperPatch, user=Depends(current_user), c
 @router.delete("/{paper_id}", status_code=204)
 def delete_paper(paper_id: UUID, user=Depends(current_user), conn=Depends(get_conn)):
     require_paper(conn, user, paper_id, "owner")
-    row = conn.execute("DELETE FROM papers WHERE id = %s RETURNING pdf_path", (paper_id,)).fetchone()
-    if row["pdf_path"] and os.path.exists(row["pdf_path"]):
-        os.remove(row["pdf_path"])
+    conn.execute("DELETE FROM papers WHERE id = %s", (paper_id,))   # paper_files row cascades
 
 
 # ---------------------------------------------------------------- reading state
@@ -236,10 +235,10 @@ def fetch_pdf_from_url(paper_id: UUID, user=Depends(current_user), conn=Depends(
 @router.get("/{paper_id}/pdf")
 def get_pdf(paper_id: UUID, user=Depends(current_user), conn=Depends(get_conn)):
     require_paper(conn, user, paper_id)
-    row = conn.execute("SELECT pdf_path FROM papers WHERE id = %s", (paper_id,)).fetchone()
-    if not row["pdf_path"] or not os.path.exists(row["pdf_path"]):
+    row = conn.execute("SELECT data FROM paper_files WHERE paper_id = %s", (paper_id,)).fetchone()
+    if not row:
         raise HTTPException(404, "No PDF uploaded for this paper")
-    return FileResponse(row["pdf_path"], media_type="application/pdf")
+    return Response(bytes(row["data"]), media_type="application/pdf")
 
 
 # ---------------------------------------------------------------- attributes (EAV)
