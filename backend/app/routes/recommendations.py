@@ -10,8 +10,9 @@ router = APIRouter(tags=["recommendations"])
 def what_to_read_next(user=Depends(current_user), conn=Depends(get_conn)):
     """Which unread papers are you ready for?
 
-    1. `learned` (recursive): concepts introduced by papers you've finished, PLUS all of
-       their prerequisites (if you understand X, you understood what X builds on).
+    1. `learned` (recursive): concepts you ticked as known or that papers you finished
+       introduced, PLUS all of their prerequisites (if you understand X, you
+       understood what X builds on).
     2. A paper is READY when NOT EXISTS any concept it assumes that you haven't learned.
        (This "no missing requirement" check is relational division.)
     3. Ready papers are ranked by how many new concepts they'd teach you.
@@ -24,12 +25,14 @@ def what_to_read_next(user=Depends(current_user), conn=Depends(get_conn)):
             SELECT paper_id FROM v_paper_role WHERE user_id = %(uid)s
         ),
         learned (concept_id) AS (
-            SELECT pc.concept_id
-            FROM paper_concepts pc
-            JOIN paper_reading_state s ON s.paper_id = pc.paper_id
-                                      AND s.user_id = %(uid)s AND s.status = 'done'
-            JOIN concepts c ON c.id = pc.concept_id AND c.owner_id = %(uid)s
-            WHERE pc.relation = 'introduces'
+            SELECT c.id
+            FROM concepts c
+            WHERE c.owner_id = %(uid)s
+              AND (c.known                      -- ticked "I already know this"
+                   OR EXISTS (SELECT 1 FROM paper_concepts pc
+                              JOIN paper_reading_state s ON s.paper_id = pc.paper_id
+                                                        AND s.user_id = %(uid)s AND s.status = 'done'
+                              WHERE pc.concept_id = c.id AND pc.relation = 'introduces'))
           UNION
             SELECT cp.prerequisite_id
             FROM concept_prerequisites cp JOIN learned l ON cp.concept_id = l.concept_id

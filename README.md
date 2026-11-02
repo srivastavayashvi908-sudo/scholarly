@@ -18,6 +18,7 @@ citation graphs, full-text and semantic search, reading stats and sharing.
 | Comparison | Per-collection table pivoted from EAV attributes (e.g. dataset, metric) |
 | Sharing | User accounts; share collections with classmates as **viewer** or **editor** |
 | Concepts | Prerequisite graph with full learning path; **cycles rejected** |
+| Learn first | **AI extracts every concept a paper uses** and what each one needs, down to the basics, and merges it into your concept graph. The paper page lists what to learn first, in order, with a mini graph; tick what you already know |
 | Citations | Citation graph + recursive lineage ("everything this paper builds on") |
 | Read next | Papers you're ready for, given what you've already learned |
 | Search | Full-text search (ranked, with highlighted snippets) across papers, highlights, notes |
@@ -82,6 +83,7 @@ backend/
   migrations/001_schema.sql               all tables, constraints, generated columns
   migrations/002_views_indexes_triggers.sql  indexes, views, triggers, stored function
   migrations/003_pdf_storage.sql, 004_...    PDFs moved from disk into the database
+  migrations/005_ai_concepts.sql             source ('user'/'ai') and known flags for concepts
   app/main.py        app setup + router registration
   app/db.py          connection pool + migration runner
   app/auth.py        bcrypt passwords + JWT
@@ -128,6 +130,8 @@ highlight_embeddings, concept_embeddings.
 | Recursive CTE: citation lineage with `DISTINCT ON` | `routes/citations.py` · `citation_lineage` |
 | Recursive CTE: threaded comments in display order | `routes/comments.py` · `list_comments` |
 | Recursive CTE + `NOT EXISTS` (relational division): what to read next | `routes/recommendations.py` |
+| Recursive CTE from many start nodes: everything to learn before a paper | `routes/papers.py` · `paper_learning_path` |
+| Merging AI output into the graph under one advisory lock, reusing the cycle check | `routes/concepts.py` · `merge_ai_concepts` |
 | Pivot with `jsonb_object_agg ... FILTER` | `routes/collections.py` · `comparison` |
 | Full-text search: generated `tsvector` columns, GIN indexes, `websearch_to_tsquery`, `ts_rank`, `ts_headline`, `UNION ALL` | `routes/search.py` |
 | Vector similarity search with pgvector `<=>` + HNSW index | `routes/ai.py` · `similar_papers`, `ask_library` |

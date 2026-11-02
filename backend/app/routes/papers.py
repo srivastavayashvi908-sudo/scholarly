@@ -288,6 +288,81 @@ def list_paper_concepts(paper_id: UUID, user=Depends(current_user), conn=Depends
     ).fetchall()
 
 
+@router.get("/{paper_id}/learning-path")
+def paper_learning_path(paper_id: UUID, user=Depends(current_user), conn=Depends(get_conn)):
+    """Everything to learn BEFORE reading this paper, in learning order.
+
+    Same recursive walk as a concept's prerequisite chain, but it starts from every concept
+    the paper uses at once. Concepts the paper assumes are needed too (depth 0); concepts
+    it introduces are what you'll learn FROM it, so they're left out of the list.
+    """
+    require_paper(conn, user, paper_id)
+    params = {"pid": paper_id, "uid": user["id"]}
+    paper_concepts = conn.execute(
+        """
+        SELECT c.id, c.name, c.description, c.difficulty, c.known, c.source, pc.relation
+        FROM paper_concepts pc JOIN concepts c ON c.id = pc.concept_id AND c.owner_id = %(uid)s
+        WHERE pc.paper_id = %(pid)s
+        ORDER BY pc.relation DESC, c.name
+        """,
+        params,
+    ).fetchall()
+    learn_first = conn.execute(
+        """
+        WITH RECURSIVE
+        used AS (
+            SELECT pc.concept_id, pc.relation
+            FROM paper_concepts pc JOIN concepts c ON c.id = pc.concept_id AND c.owner_id = %(uid)s
+            WHERE pc.paper_id = %(pid)s
+        ),
+        chain (concept_id, depth, path) AS (
+            SELECT cp.prerequisite_id, 1, ARRAY[cp.concept_id, cp.prerequisite_id]
+            FROM concept_prerequisites cp JOIN used u ON u.concept_id = cp.concept_id
+          UNION ALL
+            SELECT cp.prerequisite_id, ch.depth + 1, ch.path || cp.prerequisite_id
+            FROM concept_prerequisites cp JOIN chain ch ON cp.concept_id = ch.concept_id
+            WHERE NOT cp.prerequisite_id = ANY (ch.path) AND ch.depth < 12
+        ),
+        needed AS (
+            SELECT concept_id, depth FROM chain
+          UNION ALL
+            SELECT concept_id, 0 FROM used WHERE relation = 'assumes'
+        )
+        SELECT c.id, c.name, c.description, c.difficulty, c.known, c.source, max(n.depth) AS depth
+        FROM needed n JOIN concepts c ON c.id = n.concept_id
+        WHERE c.id NOT IN (SELECT concept_id FROM used WHERE relation = 'introduces')
+        GROUP BY c.id
+        ORDER BY depth DESC, c.name
+        """,
+        params,
+    ).fetchall()
+
+    ids = [c["id"] for c in paper_concepts] + [c["id"] for c in learn_first]
+    # For each prerequisite: other papers you can open that teach it.
+    teachers = {}
+    for t in conn.execute(
+        """
+        SELECT pc.concept_id, p.id, p.title
+        FROM paper_concepts pc
+        JOIN papers p ON p.id = pc.paper_id
+        JOIN v_paper_role r ON r.paper_id = p.id AND r.user_id = %(uid)s
+        WHERE pc.relation = 'introduces' AND pc.concept_id = ANY(%(ids)s) AND p.id <> %(pid)s
+        ORDER BY p.title
+        """,
+        {**params, "ids": ids},
+    ).fetchall():
+        teachers.setdefault(t["concept_id"], []).append({"id": t["id"], "title": t["title"]})
+    for c in learn_first:
+        c["taught_by"] = teachers.get(c["id"], [])
+
+    edges = conn.execute(
+        """SELECT concept_id AS source, prerequisite_id AS target FROM concept_prerequisites
+           WHERE concept_id = ANY(%s) AND prerequisite_id = ANY(%s)""",
+        (ids, ids),
+    ).fetchall()
+    return {"paper_concepts": paper_concepts, "learn_first": learn_first, "edges": edges}
+
+
 @router.put("/{paper_id}/concepts")
 def set_paper_concept(paper_id: UUID, body: PaperConceptIn, user=Depends(current_user), conn=Depends(get_conn)):
     require_paper(conn, user, paper_id)

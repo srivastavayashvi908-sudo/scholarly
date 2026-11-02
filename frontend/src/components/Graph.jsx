@@ -6,8 +6,9 @@ const dark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches
 /**
  * Interactive force-directed graph. Drag nodes, scroll to zoom, click a node to select it.
  * Edges point source -> target (e.g. "concept needs prerequisite", "paper cites paper").
+ * `showLabel(n)` hides labels in busy graphs; hovering a node always shows its name.
  */
-export default function Graph({ nodes, edges, onNodeClick, selectedId, highlightIds, nodeColor, nodeSize, height = 520 }) {
+export default function Graph({ nodes, edges, onNodeClick, selectedId, highlightIds, nodeColor, nodeSize, height = 520, showLabel }) {
   const box = useRef(null)
   const fg = useRef(null)
   const [width, setWidth] = useState(600)
@@ -27,19 +28,24 @@ export default function Graph({ nodes, edges, onNodeClick, selectedId, highlight
   // Fit the whole graph into view once the layout settles, but never zoom in so far
   // that a small graph turns into a few giant circles.
   const fitted = useRef(false)
+  const settled = useRef(false)
   useEffect(() => {
     fitted.current = false
+    settled.current = false
     // Spread nodes out so labels don't overlap: longer links, stronger repulsion.
     fg.current?.d3Force('link')?.distance(80)
     fg.current?.d3Force('charge')?.strength(-160)
     fg.current?.d3ReheatSimulation()
   }, [data])
   const fit = () => {
+    settled.current = true
     if (fitted.current || !fg.current) return
     fitted.current = true
     fg.current.zoomToFit(0, 60)
     if (fg.current.zoom() > 2.2) fg.current.zoom(2.2)
   }
+  // The first layout can finish before the box's real width is known: re-centre when it changes.
+  useEffect(() => { if (settled.current) { fitted.current = false; fit() } }, [width])
 
   const isDark = dark()
   const text = isDark ? '#f0efec' : '#17171a'
@@ -59,6 +65,7 @@ export default function Graph({ nodes, edges, onNodeClick, selectedId, highlight
         linkDirectionalArrowLength={5}
         linkDirectionalArrowRelPos={0.92}
         cooldownTicks={120}
+        nodeLabel={(n) => n.label}
         onEngineStop={fit}
         onNodeClick={(n) => onNodeClick?.(n)}
         nodeCanvasObject={(n, ctx, scale) => {
@@ -74,6 +81,7 @@ export default function Graph({ nodes, edges, onNodeClick, selectedId, highlight
             ctx.strokeStyle = text
             ctx.stroke()
           }
+          if (showLabel && !showLabel(n)) { ctx.globalAlpha = 1; return }
           const label = n.label.length > 40 ? n.label.slice(0, 38) + '…' : n.label
           ctx.font = `${Math.max(10 / scale, 3)}px Inter, sans-serif`
           ctx.textAlign = 'center'

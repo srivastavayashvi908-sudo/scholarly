@@ -4,8 +4,9 @@ import { api, fmtDuration } from '../api'
 import PdfViewer from '../components/PdfViewer'
 import HighlightsPanel from '../components/HighlightsPanel'
 import { CitationsPanel, InfoPanel, NotesPanel, SimilarPanel } from '../components/PaperPanels'
+import LearnFirst from '../components/LearnFirst'
 
-const TABS = ['Highlights', 'Notes', 'Info', 'Similar', 'Citations']
+const TABS = ['Highlights', 'Learn first', 'Notes', 'Info', 'Similar', 'Citations']
 
 export default function PaperPage() {
   const { id } = useParams()
@@ -115,6 +116,7 @@ export default function PaperPage() {
             <HighlightsPanel paper={paper} highlights={highlights} focusedId={focusedId} onFocus={focus}
                              onCreate={createHighlight} onChange={loadHighlights} collections={collections} />
           )}
+          {tab === 'Learn first' && <LearnFirst paper={paper} />}
           {tab === 'Notes' && <NotesPanel paperId={id} />}
           {tab === 'Info' && <InfoPanel paper={paper} onChange={loadPaper} />}
           {tab === 'Similar' && <SimilarPanel paperId={id} />}

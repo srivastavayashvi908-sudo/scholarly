@@ -64,6 +64,7 @@ export const TAGS = {
   future_work: { label: 'Future work', color: '#eb6834' },
 }
 export const DEFAULT_HIGHLIGHT = '#f5c542'
+export const DIFFICULTY_COLOR = { beginner: '#1baf7a', intermediate: '#eda100', advanced: '#e34948' }
 export const highlightColor = (h) => h.color || TAGS[h.tag]?.color || DEFAULT_HIGHLIGHT
 
 export const fmtDuration = (s) => {

@@ -8,7 +8,8 @@ from ..access import require_paper
 from ..auth import current_user
 from ..db import get_conn
 from ..models import AskIn
-from ..services import embeddings, llm
+from ..services import concept_ai, embeddings, llm
+from . import concepts
 
 router = APIRouter(tags=["ai"])
 
@@ -50,6 +51,26 @@ def pdf_text(data: bytes, max_chars: int = 15000) -> str:
         if sum(map(len, out)) > max_chars:
             break
     return "\n".join(out)[:max_chars]
+
+
+@router.post("/papers/{paper_id}/extract-concepts")
+def extract_concepts(paper_id: UUID, user=Depends(current_user), conn=Depends(get_conn)):
+    """Ask the AI which concepts this paper uses and what they build on, then merge that
+    into the user's prerequisite graph (see concepts.merge_ai_concepts)."""
+    require_paper(conn, user, paper_id)
+    paper = conn.execute("SELECT title, abstract FROM papers WHERE id = %s", (paper_id,)).fetchone()
+    pdf = conn.execute("SELECT data FROM paper_files WHERE paper_id = %s", (paper_id,)).fetchone()
+    body = ""
+    if pdf:
+        try:
+            body = pdf_text(bytes(pdf["data"]), max_chars=4000)[:4000]
+        except Exception:  # noqa: BLE001
+            pass
+    if not (paper["abstract"] or body):
+        raise HTTPException(400, "Add an abstract or upload the PDF first, so the AI has something to read")
+    existing = [r["name"] for r in conn.execute("SELECT name FROM concepts WHERE owner_id = %s ORDER BY name", (user["id"],))]
+    found = concept_ai.extract(paper["title"], paper["abstract"], body, existing)
+    return concepts.merge_ai_concepts(conn, user, paper_id, found)
 
 
 @router.post("/papers/{paper_id}/summarize")

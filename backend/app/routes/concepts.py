@@ -6,8 +6,9 @@ from psycopg.errors import UniqueViolation
 from ..access import require_concept
 from ..auth import current_user
 from ..db import get_conn
-from ..models import ConceptIn, PrerequisiteIn
+from ..models import ConceptIn, KnownIn, PrerequisiteIn
 from ..services import embeddings
+from ..services.concept_ai import concept_key
 
 router = APIRouter(prefix="/concepts", tags=["concepts"])
 
@@ -146,24 +147,20 @@ def prerequisite_chain(concept_id: UUID, user=Depends(current_user), conn=Depend
     return {"concept": {"id": concept["id"], "name": concept["name"]}, "learning_order": chain, "edges": edges}
 
 
-@router.post("/{concept_id}/prerequisites", status_code=201)
-def add_prerequisite(concept_id: UUID, body: PrerequisiteIn, user=Depends(current_user), conn=Depends(get_conn)):
-    """Add the edge "concept_id requires prerequisite_id", rejecting it if it would create a cycle.
-
-    A cycle appears exactly when the new prerequisite ALREADY (directly or indirectly)
-    requires concept_id. So we walk the prerequisites of the new prerequisite and check
-    whether concept_id is among them. If it is, the walk's path is the cycle we'd create.
-    """
-    concept = require_concept(conn, user, concept_id)
-    prereq = require_concept(conn, user, body.prerequisite_id)
-    if concept_id == body.prerequisite_id:
-        raise HTTPException(409, "A concept can't be its own prerequisite")
-
-    # Serialize edge inserts so two simultaneous requests can't each pass the check
-    # and together create a cycle (A->B and B->A at the same moment).
+def lock_prerequisites(conn) -> None:
+    """Serialize edge inserts so two simultaneous requests can't each pass the cycle check
+    and together create a cycle (A->B and B->A at the same moment). Released at commit."""
     conn.execute("SELECT pg_advisory_xact_lock(hashtext('concept_prerequisites'))")
 
-    cycle = conn.execute(
+
+def find_cycle(conn, concept_id, prerequisite_id) -> list | None:
+    """If adding "concept_id requires prerequisite_id" would close a loop, return the loop.
+
+    A cycle appears exactly when the new prerequisite ALREADY (directly or indirectly)
+    requires concept_id, so we walk the prerequisites of the new prerequisite and look
+    for concept_id. The walk's path is then the cycle we'd create.
+    """
+    row = conn.execute(
         """
         WITH RECURSIVE walk (id, path) AS (
             SELECT %(pre)s::uuid, ARRAY[%(pre)s::uuid]
@@ -175,14 +172,27 @@ def add_prerequisite(concept_id: UUID, body: PrerequisiteIn, user=Depends(curren
         )
         SELECT path FROM walk WHERE id = %(cid)s LIMIT 1
         """,
-        {"pre": body.prerequisite_id, "cid": concept_id},
+        {"pre": prerequisite_id, "cid": concept_id},
     ).fetchone()
+    return row["path"] if row else None
+
+
+@router.post("/{concept_id}/prerequisites", status_code=201)
+def add_prerequisite(concept_id: UUID, body: PrerequisiteIn, user=Depends(current_user), conn=Depends(get_conn)):
+    """Add the edge "concept_id requires prerequisite_id", rejecting it if it would create a cycle."""
+    concept = require_concept(conn, user, concept_id)
+    prereq = require_concept(conn, user, body.prerequisite_id)
+    if concept_id == body.prerequisite_id:
+        raise HTTPException(409, "A concept can't be its own prerequisite")
+
+    lock_prerequisites(conn)
+    cycle = find_cycle(conn, concept_id, body.prerequisite_id)
     if cycle:
         names = conn.execute(
-            "SELECT id, name FROM concepts WHERE id = ANY(%s)", (cycle["path"],)
+            "SELECT id, name FROM concepts WHERE id = ANY(%s)", (cycle,)
         ).fetchall()
         name_of = {n["id"]: n["name"] for n in names}
-        loop = [concept["name"]] + [name_of[i] for i in cycle["path"]]
+        loop = [concept["name"]] + [name_of[i] for i in cycle]
         raise HTTPException(
             409,
             f"That would create a cycle: {' → '.join(loop)}. "
@@ -194,6 +204,15 @@ def add_prerequisite(concept_id: UUID, body: PrerequisiteIn, user=Depends(curren
         (concept_id, body.prerequisite_id),
     )
     return {"ok": True}
+
+
+@router.put("/{concept_id}/known")
+def set_known(concept_id: UUID, body: KnownIn, user=Depends(current_user), conn=Depends(get_conn)):
+    """Tick "I already know this": it then counts as learned for Read next and learning paths."""
+    require_concept(conn, user, concept_id)
+    return conn.execute(
+        "UPDATE concepts SET known = %s WHERE id = %s RETURNING *", (body.known, concept_id)
+    ).fetchone()
 
 
 @router.delete("/{concept_id}/prerequisites/{prerequisite_id}", status_code=204)
@@ -220,3 +239,80 @@ def similar_concepts(concept_id: UUID, user=Depends(current_user), conn=Depends(
         """,
         (user["id"], concept_id),
     ).fetchall()
+
+
+# ---------------------------------------------------------------- AI extraction
+
+def merge_ai_concepts(conn, user, paper_id, found: list[dict]) -> dict:
+    """Merge the AI's concepts for one paper into the user's graph.
+
+    - Concepts are matched to existing ones by a loose name key, so papers share nodes.
+    - Prerequisite edges go through the same cycle check as hand-made ones; an edge that
+      would close a loop is skipped instead of failing the whole extraction.
+    - The paper's previous AI links are replaced; links you added by hand are kept.
+    """
+    lock_prerequisites(conn)
+    existing = {
+        concept_key(r["name"]): r["id"]
+        for r in conn.execute("SELECT id, name FROM concepts WHERE owner_id = %s", (user["id"],))
+    }
+    ids, new_rows = {}, []
+    for c in found:
+        key = concept_key(c["name"])
+        if key in existing:
+            ids[key] = existing[key]
+            conn.execute(
+                """UPDATE concepts SET description = coalesce(description, %s), difficulty = coalesce(difficulty, %s)
+                   WHERE id = %s""",
+                (c["description"], c["difficulty"], existing[key]),
+            )
+            continue
+        row = conn.execute(
+            """
+            INSERT INTO concepts (owner_id, name, description, difficulty, source)
+            VALUES (%s, %s, %s, %s, 'ai') RETURNING *
+            """,
+            (user["id"], c["name"], c["description"], c["difficulty"]),
+        ).fetchone()
+        existing[key] = ids[key] = row["id"]
+        new_rows.append(row)
+
+    links_added = cycles_skipped = 0
+    for c in found:
+        cid = ids[concept_key(c["name"])]
+        for p in c["prerequisites"]:
+            pid = ids.get(concept_key(p))
+            if pid is None or pid == cid:
+                continue
+            if find_cycle(conn, cid, pid):
+                cycles_skipped += 1
+                continue
+            links_added += conn.execute(
+                """INSERT INTO concept_prerequisites (concept_id, prerequisite_id, source)
+                   VALUES (%s, %s, 'ai') ON CONFLICT DO NOTHING""",
+                (cid, pid),
+            ).rowcount
+
+    conn.execute(
+        """
+        DELETE FROM paper_concepts pc USING concepts c
+        WHERE c.id = pc.concept_id AND c.owner_id = %s AND pc.paper_id = %s AND pc.source = 'ai'
+        """,
+        (user["id"], paper_id),
+    )
+    for c in found:
+        if c["relation"]:
+            conn.execute(
+                """INSERT INTO paper_concepts (paper_id, concept_id, relation, source)
+                   VALUES (%s, %s, %s, 'ai') ON CONFLICT (paper_id, concept_id) DO NOTHING""",
+                (paper_id, ids[concept_key(c["name"])], c["relation"]),
+            )
+
+    for row in new_rows:
+        safe_embed(conn, row)
+    return {
+        "concepts_found": len(found),
+        "new_concepts": len(new_rows),
+        "links_added": links_added,
+        "cycles_skipped": cycles_skipped,
+    }

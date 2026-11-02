@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { api, DIFFICULTY_COLOR } from '../api'
 import Graph from '../components/Graph'
 
-const DIFFICULTY_COLOR = { beginner: '#1baf7a', intermediate: '#eda100', advanced: '#e34948' }
 
 export default function Concepts() {
   const [graph, setGraph] = useState({ nodes: [], edges: [] })
@@ -99,6 +98,7 @@ function ConceptDetail({ id, all, onChange, onSelect }) {
   }
   const removePrereq = async (pid) => { await api.del(`/concepts/${id}/prerequisites/${pid}`); load(); onChange() }
   const remove = async () => { await api.del(`/concepts/${id}`); onSelect(null); onChange() }
+  const toggleKnown = async () => { setC({ ...c, ...(await api.put(`/concepts/${id}/known`, { known: !c.known })) }) }
 
   if (!c || !chain) return <div className="muted">Loading…</div>
   return (
@@ -107,7 +107,13 @@ function ConceptDetail({ id, all, onChange, onSelect }) {
         <h2 style={{ margin: 0 }}>{c.name}</h2>
         <button className="link small" style={{ color: 'var(--danger)' }} onClick={remove}>Delete</button>
       </div>
-      {c.difficulty && <span className="chip">{c.difficulty}</span>}
+      <div className="row">
+        {c.difficulty && <span className="chip">{c.difficulty}</span>}
+        {c.source === 'ai' && <span className="chip" title="Added by the AI from a paper">✨ AI</span>}
+        <label className="small row" style={{ gap: 4 }}>
+          <input type="checkbox" checked={c.known} onChange={toggleKnown} /> I already know this
+        </label>
+      </div>
       {c.description && <div>{c.description}</div>}
 
       <div>

@@ -119,6 +119,10 @@ class ConceptIn(BaseModel):
     difficulty: Difficulty | None = None
 
 
+class KnownIn(BaseModel):
+    known: bool
+
+
 class PrerequisiteIn(BaseModel):
     prerequisite_id: UUID
 
